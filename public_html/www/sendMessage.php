@@ -58,4 +58,26 @@ $('#message').keyup(function(){
 // Update the preview message with emojis
 function ajax(){
   $.ajax({ url: "ajax.php",
-           data: {command: 'emoji_unified_to_html', code: $('#message').val()}
+           data: {command: 'emoji_unified_to_html', code: $('#message').val()},
+           type: 'POST',
+           success:
+            function (response){
+              $("#prev").html(response);
+            }
+  });
+}
+
+// Show/hide the list of emojis
+$('#emojis, .close').click(function(e){
+    $('#emojisTable').toggle();
+});
+
+// Writes the selected emoji in the input field
+$('.emoji').click(function(e) {
+  var code = $(this).attr('class').split(' ')[1].slice(5);
+  var emoji = htmlDecode("&#x" + code + ";");
+
+  $('#message').val($('#message').val() + emoji);
+  $('#message').trigger("keyup");
+});
+</script>
