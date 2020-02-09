@@ -28,4 +28,34 @@ TODO:
       <!-- Emojis -->
       <div id="emojisTable" class="emojisContainer">
         <button type="button" class="close" aria-label="Close">
-          <span aria-hidden="true">
+          <span aria-hidden="true">&times;</span>
+          <span class="sr-only">Close</span>
+        </button>
+        <div class="p-tr-25">
+<?php
+  foreach ($GLOBALS['emoji_maps']['names'] as $code => $text) {
+    echo emoji_unified_to_html($code);
+  }
+?>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<?php
+  require_once(TEMPLATES_PATH . "/footer.php");
+?>
+<script>
+// Update the number of bytes when writting a new char
+$('#message').keyup(function(){
+  var bytes = getByteLen($('#message').val());
+
+  $('#bytes').text(bytes);
+  $('#transactions').text(parseInt((bytes-1)/80)+1);
+  ajax();
+});
+
+// Update the preview message with emojis
+function ajax(){
+  $.ajax({ url: "ajax.php",
+           data: {command: 'emoji_unified_to_html', code: $('#message').val()}
