@@ -8,4 +8,9 @@ if($config["debug"]){
 
 session_start();
 if(!empty($_SESSION['visited_pages'])) {
-  $_SESSION['visited_pages']['prev'] = $_SESSION['visi
+  $_SESSION['visited_pages']['prev'] = $_SESSION['visited_pages']['current'];
+}else {
+  $_SESSION['visited_pages']['prev'] = 'No previous page';
+}
+$_SESSION['visited_pages']['current'] = $_SERVER['REQUEST_URI'];
+?>
