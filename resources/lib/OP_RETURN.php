@@ -553,3 +553,376 @@
 
 		for ($txid_offset=0; $txid_offset<=14; $txid_offset++) {
 			$sub_txid=substr($txid_binary, 2*$txid_offset, 2);
+			$clashed=false;
+
+			foreach ($avoid_txids as $avoid_txid) {
+				$avoid_txid_binary=pack('H*', $avoid_txid);
+
+				if (
+					(substr($avoid_txid_binary, 2*$txid_offset, 2)==$sub_txid) &&
+					($txid_binary!=$avoid_txid_binary)
+				) {
+					$clashed=true;
+					break;
+				}
+			}
+
+			if (!$clashed)
+				break;
+		}
+
+		if ($clashed) // could not find a good reference
+			return null;
+
+		$tx_ref=ord($txid_binary[2*$txid_offset])+256*ord($txid_binary[1+2*$txid_offset])+65536*$txid_offset;
+
+		return sprintf('%06d-%06d', $next_height, $tx_ref);
+	}
+
+	function OP_RETURN_get_ref_parts($ref)
+	{
+		if (!preg_match('/^[0-9]+\-[0-9A-Fa-f]+$/', $ref)) // also support partial txid for second half
+			return null;
+
+		$parts=explode('-', $ref);
+
+		if (preg_match('/[A-Fa-f]/', $parts[1])) {
+			if (strlen($parts[1])>=4) {
+				$txid_binary=hex2bin(substr($parts[1], 0, 4));
+				$parts[1]=ord($txid_binary[0])+256*ord($txid_binary[1])+65536*0;
+			} else
+				return null;
+		}
+
+		if ($parts[1]>983039) // 14*65536+65535
+			return null;
+
+		return $parts;
+	}
+
+	function OP_RETURN_get_ref_heights($ref, $max_height)
+	{
+		$parts=OP_RETURN_get_ref_parts($ref);
+		if (!is_array($parts))
+			return null;
+
+		return OP_RETURN_get_try_heights((int)$parts[0], $max_height, true);
+	}
+
+	function OP_RETURN_get_try_heights($est_height, $max_height, $also_back)
+	{
+		$forward_height=$est_height;
+		$back_height=min($forward_height-1, $max_height);
+
+		$heights=array();
+		$mempool=false;
+
+		for ($try=0; true; $try++) {
+			if ($also_back && (($try%3)==2)) { // step back every 3 tries
+				$heights[]=$back_height;
+				$back_height--;
+
+			} else {
+				if ($forward_height>$max_height) {
+					if (!$mempool) {
+						$heights[]=0; // indicates to try mempool
+						$mempool=true;
+
+					} elseif (!$also_back)
+						break; // nothing more to do here
+
+				} else
+					$heights[]=$forward_height;
+
+				$forward_height++;
+			}
+
+			if (count($heights)>=OP_RETURN_MAX_BLOCKS)
+				break;
+		}
+
+		return $heights;
+	}
+
+	function OP_RETURN_match_ref_txid($ref, $txid)
+	{
+		$parts=OP_RETURN_get_ref_parts($ref);
+		if (!is_array($parts))
+			return null;
+
+		$txid_offset=floor($parts[1]/65536);
+		$txid_binary=pack('H*', $txid);
+
+		$txid_part=substr($txid_binary, 2*$txid_offset, 2);
+		$txid_match=chr($parts[1]%256).chr(floor(($parts[1]%65536)/256));
+
+		return $txid_part==$txid_match; // exact binary comparison
+	}
+
+
+//	Unpacking and packing bitcoin blocks and transactions
+
+	function OP_RETURN_unpack_block($binary)
+	{
+		$buffer=new OP_RETURN_buffer($binary);
+		$block=array();
+
+		$block['version']=$buffer->shift_unpack(4, 'V');
+		$block['hashPrevBlock']=$buffer->shift_unpack(32, 'H*', true);
+		$block['hashMerkleRoot']=$buffer->shift_unpack(32, 'H*', true);
+		$block['time']=$buffer->shift_unpack(4, 'V');
+		$block['bits']=$buffer->shift_unpack(4, 'V');
+		$block['nonce']=$buffer->shift_unpack(4, 'V');
+		$block['tx_count']=$buffer->shift_varint();
+
+		$block['txs']=array();
+
+		$old_ptr=$buffer->used();
+
+		while ($buffer->remaining()) {
+			$transaction=OP_RETURN_unpack_txn_buffer($buffer);
+			$new_ptr=$buffer->used();
+			$size=$new_ptr-$old_ptr;
+
+			$raw_txn_binary=substr($binary, $old_ptr, $size);
+			$txid=reset(unpack('H*', strrev(hash('sha256', hash('sha256', $raw_txn_binary, true), true))));
+			$old_ptr=$new_ptr;
+
+			$transaction['size']=$size;
+			$block['txs'][$txid]=$transaction;
+		}
+
+		return $block;
+	}
+
+	function OP_RETURN_unpack_txn($binary)
+	{
+		return OP_RETURN_unpack_txn_buffer(new OP_RETURN_buffer($binary));
+	}
+
+	function OP_RETURN_unpack_txn_buffer($buffer)
+	{
+		// see: https://en.bitcoin.it/wiki/Transactions
+
+		$txn=array();
+
+		$txn['version']=$buffer->shift_unpack(4, 'V'); // small-endian 32-bits
+
+		for ($inputs=$buffer->shift_varint(); $inputs>0; $inputs--) {
+			$input=array();
+
+			$input['txid']=$buffer->shift_unpack(32, 'H*', true);
+			$input['vout']=$buffer->shift_unpack(4, 'V');
+			$length=$buffer->shift_varint();
+			$input['scriptSig']=$buffer->shift_unpack($length, 'H*');
+			$input['sequence']=$buffer->shift_unpack(4, 'V');
+
+			$txn['vin'][]=$input;
+		}
+
+		for ($outputs=$buffer->shift_varint(); $outputs>0; $outputs--) {
+			$output=array();
+
+			$output['value']=$buffer->shift_uint64()/100000000;
+			$length=$buffer->shift_varint();
+			$output['scriptPubKey']=$buffer->shift_unpack($length, 'H*');
+
+			$txn['vout'][]=$output;
+		}
+
+		$txn['locktime']=$buffer->shift_unpack(4, 'V');
+
+		return $txn;
+	}
+
+	function OP_RETURN_find_spent_txid($txns, $spent_txid, $spent_vout)
+	{
+		foreach ($txns as $txid => $txn_unpacked)
+			foreach ($txn_unpacked['vin'] as $input)
+				if ( ($input['txid']==$spent_txid) && ($input['vout']==$spent_vout) )
+					return $txid;
+
+		return null;
+	}
+
+	function OP_RETURN_find_txn_data($txn_unpacked)
+	{
+		foreach ($txn_unpacked['vout'] as $index => $output) {
+			$op_return=OP_RETURN_get_script_data(pack('H*', $output['scriptPubKey']));
+
+			if (isset($op_return))
+				return array(
+					'index' => $index,
+					'op_return' => $op_return,
+				);
+		}
+
+		return null;
+	}
+
+	function OP_RETURN_get_script_data($scriptPubKeyBinary)
+	{
+		$op_return=null;
+
+		if ($scriptPubKeyBinary[0]=="\x6a") {
+			$first_ord=ord($scriptPubKeyBinary[1]);
+
+			if ($first_ord<=75)
+				$op_return=substr($scriptPubKeyBinary, 2, $first_ord);
+			elseif ($first_ord==0x4c)
+				$op_return=substr($scriptPubKeyBinary, 3, ord($scriptPubKeyBinary[2]));
+			elseif ($first_ord==0x4d)
+				$op_return=substr($scriptPubKeyBinary, 4, ord($scriptPubKeyBinary[2])+256*ord($scriptPubKeyBinary[3]));
+		}
+
+		return $op_return;
+	}
+
+	function OP_RETURN_pack_txn($txn)
+	{
+		$binary='';
+
+		$binary.=pack('V', $txn['version']);
+
+		$binary.=OP_RETURN_pack_varint(count($txn['vin']));
+
+		foreach ($txn['vin'] as $input) {
+			$binary.=strrev(pack('H*', $input['txid']));
+			$binary.=pack('V', $input['vout']);
+			$binary.=OP_RETURN_pack_varint(strlen($input['scriptSig'])/2); // divide by 2 because it is currently in hex
+			$binary.=pack('H*', $input['scriptSig']);
+			$binary.=pack('V', $input['sequence']);
+		}
+
+		$binary.=OP_RETURN_pack_varint(count($txn['vout']));
+
+		foreach ($txn['vout'] as $output) {
+			$binary.=OP_RETURN_pack_uint64(round($output['value']*100000000));
+			$binary.=OP_RETURN_pack_varint(strlen($output['scriptPubKey'])/2); // divide by 2 because it is currently in hex
+			$binary.=pack('H*', $output['scriptPubKey']);
+		}
+
+		$binary.=pack('V', $txn['locktime']);
+
+		return $binary;
+	}
+
+	function OP_RETURN_pack_varint($integer)
+	{
+		if ($integer>0xFFFFFFFF)
+			$packed="\xFF".OP_RETURN_pack_uint64($integer);
+		elseif ($integer>0xFFFF)
+			$packed="\xFE".pack('V', $integer);
+		elseif ($integer>0xFC)
+			$packed="\xFD".pack('v', $integer);
+		else
+			$packed=pack('C', $integer);
+
+		return $packed;
+	}
+
+	function OP_RETURN_pack_uint64($integer)
+	{
+		$upper=floor($integer/4294967296);
+		$lower=$integer-$upper*4294967296;
+
+		return pack('V', $lower).pack('V', $upper);
+	}
+
+
+//	Helper class for unpacking bitcoin binary data
+
+	class OP_RETURN_buffer
+	{
+		 var $data;
+		 var $len;
+		 var $ptr;
+
+		 function __construct($data, $ptr=0)
+		 {
+		 	$this->data=$data;
+		 	$this->len=strlen($data);
+		 	$this->ptr=$ptr;
+		 }
+
+		 function shift($chars)
+		 {
+		 	$prefix=substr($this->data, $this->ptr, $chars);
+		 	$this->ptr+=$chars;
+
+		 	return $prefix;
+		 }
+
+		 function shift_unpack($chars, $format, $reverse=false)
+		 {
+			$data=$this->shift($chars);
+			if ($reverse)
+				$data=strrev($data);
+
+			$unpack=unpack($format, $data);
+
+			return reset($unpack);
+		}
+
+		function shift_varint()
+		{
+			$value=$this->shift_unpack(1, 'C');
+
+			if ($value==0xFF)
+				$value=$this->shift_uint64();
+			elseif ($value==0xFE)
+				$value=$this->shift_unpack(4, 'V');
+			elseif ($value==0xFD)
+				$value=$this->shift_unpack(2, 'v');
+
+			return $value;
+		}
+
+		function shift_uint64()
+		{
+			return $this->shift_unpack(4, 'V')+($this->shift_unpack(4, 'V')*4294967296);
+		}
+
+		function used()
+		{
+			return min($this->ptr, $this->len);
+		}
+
+		function remaining()
+		{
+			return max($this->len-$this->ptr, 0);
+		}
+	}
+
+
+//	Sort-by utility functions
+
+	function OP_RETURN_sort_by(&$array, $by1, $by2=null)
+	{
+		global $sort_by_1, $sort_by_2;
+
+		$sort_by_1=$by1;
+		$sort_by_2=$by2;
+
+		uasort($array, 'OP_RETURN_sort_by_fn');
+	}
+
+	function OP_RETURN_sort_by_fn($a, $b)
+	{
+		global $sort_by_1, $sort_by_2;
+
+		$compare=OP_RETURN_sort_cmp($a[$sort_by_1], $b[$sort_by_1]);
+
+		if (($compare==0) && $sort_by_2)
+			$compare=OP_RETURN_sort_cmp($a[$sort_by_2], $b[$sort_by_2]);
+
+		return $compare;
+	}
+
+	function OP_RETURN_sort_cmp($a, $b)
+	{
+		if (is_numeric($a) && is_numeric($b)) // straight subtraction won't work for floating bits
+			return ($a==$b) ? 0 : (($a<$b) ? -1 : 1);
+		else
+			return strcasecmp($a, $b); // doesn't do UTF-8 right but it will do for now
+	}
