@@ -562,4 +562,17 @@ fieldset[disabled] .btn-danger.active {
   background-image:      -o-linear-gradient(top, #fcf8e3 0%, #faf2cc 100%);
   background-image: -webkit-gradient(linear, left top, left bottom, from(#fcf8e3), to(#faf2cc));
   background-image:         linear-gradient(to bottom, #fcf8e3 0%, #faf2cc 100%);
-  filter: progid:DXImageTrans
+  filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#fffcf8e3', endColorstr='#fffaf2cc', GradientType=0);
+  background-repeat: repeat-x;
+}
+.panel-danger > .panel-heading {
+  background-image: -webkit-linear-gradient(top, #f2dede 0%, #ebcccc 100%);
+  background-image:      -o-linear-gradient(top, #f2dede 0%, #ebcccc 100%);
+  background-image: -webkit-gradient(linear, left top, left bottom, from(#f2dede), to(#ebcccc));
+  background-image:         linear-gradient(to bottom, #f2dede 0%, #ebcccc 100%);
+  filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#fff2dede', endColorstr='#ffebcccc', GradientType=0);
+  background-repeat: repeat-x;
+}
+.well {
+  background-image: -webkit-linear-gradient(top, #e8e8e8 0%, #f5f5f5 100%);
+  background-image:      -o-lin
