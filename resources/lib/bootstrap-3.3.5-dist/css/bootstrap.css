@@ -840,4 +840,44 @@ th {
 .glyphicon-sd-video:before {
   content: "\e186";
 }
-.glyphicon-
+.glyphicon-hd-video:before {
+  content: "\e187";
+}
+.glyphicon-subtitles:before {
+  content: "\e188";
+}
+.glyphicon-sound-stereo:before {
+  content: "\e189";
+}
+.glyphicon-sound-dolby:before {
+  content: "\e190";
+}
+.glyphicon-sound-5-1:before {
+  content: "\e191";
+}
+.glyphicon-sound-6-1:before {
+  content: "\e192";
+}
+.glyphicon-sound-7-1:before {
+  content: "\e193";
+}
+.glyphicon-copyright-mark:before {
+  content: "\e194";
+}
+.glyphicon-registration-mark:before {
+  content: "\e195";
+}
+.glyphicon-cloud-download:before {
+  content: "\e197";
+}
+.glyphicon-cloud-upload:before {
+  content: "\e198";
+}
+.glyphicon-tree-conifer:before {
+  content: "\e199";
+}
+.glyphicon-tree-deciduous:before {
+  content: "\e200";
+}
+.glyphicon-cd:before {
+  content
