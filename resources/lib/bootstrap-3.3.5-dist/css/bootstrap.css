@@ -5444,4 +5444,30 @@ button.list-group-item-warning:hover,
 a.list-group-item-warning:focus,
 button.list-group-item-warning:focus {
   color: #8a6d3b;
-  background-col
+  background-color: #faf2cc;
+}
+a.list-group-item-warning.active,
+button.list-group-item-warning.active,
+a.list-group-item-warning.active:hover,
+button.list-group-item-warning.active:hover,
+a.list-group-item-warning.active:focus,
+button.list-group-item-warning.active:focus {
+  color: #fff;
+  background-color: #8a6d3b;
+  border-color: #8a6d3b;
+}
+.list-group-item-danger {
+  color: #a94442;
+  background-color: #f2dede;
+}
+a.list-group-item-danger,
+button.list-group-item-danger {
+  color: #a94442;
+}
+a.list-group-item-danger .list-group-item-heading,
+button.list-group-item-danger .list-group-item-heading {
+  color: inherit;
+}
+a.list-group-item-danger:hover,
+button.list-group-item-danger:hover,
+a.list-group-item-danger:foc
