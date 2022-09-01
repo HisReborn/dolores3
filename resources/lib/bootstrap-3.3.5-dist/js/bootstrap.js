@@ -214,4 +214,23 @@ if (typeof jQuery === 'undefined') {
 
       if (state == 'loadingText') {
         this.isLoading = true
-  
+        $el.addClass(d).attr(d, d)
+      } else if (this.isLoading) {
+        this.isLoading = false
+        $el.removeClass(d).removeAttr(d)
+      }
+    }, this), 0)
+  }
+
+  Button.prototype.toggle = function () {
+    var changed = true
+    var $parent = this.$element.closest('[data-toggle="buttons"]')
+
+    if ($parent.length) {
+      var $input = this.$element.find('input')
+      if ($input.prop('type') == 'radio') {
+        if ($input.prop('checked')) changed = false
+        $parent.find('.active').removeClass('active')
+        this.$element.addClass('active')
+      } else if ($input.prop('type') == 'checkbox') {
+        if (($input.prop('checked')) !== this.$element.hasClass('active')) chan
