@@ -738,3 +738,796 @@
 					// drop through intentionally if nil extension not enabled
 				case 'PARAMS':
 				case 'FAULT':
+				case 'METHODCALL':
+				case 'METHORESPONSE':
+					break;
+				default:
+					// End of INVALID ELEMENT!
+					// shall we add an assert here for unreachable code???
+					break;
+			}
+		}
+	}
+
+	/// Used in decoding xmlrpc requests/responses without rebuilding xmlrpc values
+	function xmlrpc_ee_fast($parser, $name)
+	{
+		xmlrpc_ee($parser, $name, false);
+	}
+
+	/// xml parser handler function for character data
+	function xmlrpc_cd($parser, $data)
+	{
+		// skip processing if xml fault already detected
+		if ($GLOBALS['_xh']['isf'] < 2)
+		{
+			// "lookforvalue==3" means that we've found an entire value
+			// and should discard any further character data
+			if($GLOBALS['_xh']['lv']!=3)
+			{
+				// G. Giunta 2006-08-23: useless change of 'lv' from 1 to 2
+				//if($GLOBALS['_xh']['lv']==1)
+				//{
+					// if we've found text and we're just in a <value> then
+					// say we've found a value
+					//$GLOBALS['_xh']['lv']=2;
+				//}
+				// we always initialize the accumulator before starting parsing, anyway...
+				//if(!@isset($GLOBALS['_xh']['ac']))
+				//{
+				//	$GLOBALS['_xh']['ac'] = '';
+				//}
+				$GLOBALS['_xh']['ac'].=$data;
+			}
+		}
+	}
+
+	/// xml parser handler function for 'other stuff', ie. not char data or
+	/// element start/end tag. In fact it only gets called on unknown entities...
+	function xmlrpc_dh($parser, $data)
+	{
+		// skip processing if xml fault already detected
+		if ($GLOBALS['_xh']['isf'] < 2)
+		{
+			if(substr($data, 0, 1) == '&' && substr($data, -1, 1) == ';')
+			{
+				// G. Giunta 2006-08-25: useless change of 'lv' from 1 to 2
+				//if($GLOBALS['_xh']['lv']==1)
+				//{
+				//	$GLOBALS['_xh']['lv']=2;
+				//}
+				$GLOBALS['_xh']['ac'].=$data;
+			}
+		}
+		return true;
+	}
+
+	class xmlrpc_client
+	{
+		var $path;
+		var $server;
+		var $port=0;
+		var $method='http';
+		var $errno;
+		var $errstr;
+		var $debug=0;
+		var $username='';
+		var $password='';
+		var $authtype=1;
+		var $cert='';
+		var $certpass='';
+		var $cacert='';
+		var $cacertdir='';
+		var $key='';
+		var $keypass='';
+		var $verifypeer=true;
+		var $verifyhost=1;
+		var $no_multicall=false;
+		var $proxy='';
+		var $proxyport=0;
+		var $proxy_user='';
+		var $proxy_pass='';
+		var $proxy_authtype=1;
+		var $cookies=array();
+		var $extracurlopts=array();
+
+		/**
+		* List of http compression methods accepted by the client for responses.
+		* NB: PHP supports deflate, gzip compressions out of the box if compiled w. zlib
+		*
+		* NNB: you can set it to any non-empty array for HTTP11 and HTTPS, since
+		* in those cases it will be up to CURL to decide the compression methods
+		* it supports. You might check for the presence of 'zlib' in the output of
+		* curl_version() to determine wheter compression is supported or not
+		*/
+		var $accepted_compression = array();
+		/**
+		* Name of compression scheme to be used for sending requests.
+		* Either null, gzip or deflate
+		*/
+		var $request_compression = '';
+		/**
+		* CURL handle: used for keep-alive connections (PHP 4.3.8 up, see:
+		* http://curl.haxx.se/docs/faq.html#7.3)
+		*/
+		var $xmlrpc_curl_handle = null;
+		/// Wheter to use persistent connections for http 1.1 and https
+		var $keepalive = false;
+		/// Charset encodings that can be decoded without problems by the client
+		var $accepted_charset_encodings = array();
+		/// Charset encoding to be used in serializing request. NULL = use ASCII
+		var $request_charset_encoding = '';
+		/**
+		* Decides the content of xmlrpcresp objects returned by calls to send()
+		* valid strings are 'xmlrpcvals', 'phpvals' or 'xml'
+		*/
+		var $return_type = 'xmlrpcvals';
+		/**
+		* Sent to servers in http headers
+		*/
+		var $user_agent;
+
+		/**
+		* @param string $path either the complete server URL or the PATH part of the xmlrc server URL, e.g. /xmlrpc/server.php
+		* @param string $server the server name / ip address
+		* @param integer $port the port the server is listening on, defaults to 80 or 443 depending on protocol used
+		* @param string $method the http protocol variant: defaults to 'http', 'https' and 'http11' can be used if CURL is installed
+		*/
+		function xmlrpc_client($path, $server='', $port='', $method='')
+		{
+			// allow user to specify all params in $path
+			if($server == '' and $port == '' and $method == '')
+			{
+				$parts = parse_url($path);
+				$server = $parts['host'];
+				$path = isset($parts['path']) ? $parts['path'] : '';
+				if(isset($parts['query']))
+				{
+					$path .= '?'.$parts['query'];
+				}
+				if(isset($parts['fragment']))
+				{
+					$path .= '#'.$parts['fragment'];
+				}
+				if(isset($parts['port']))
+				{
+					$port = $parts['port'];
+				}
+				if(isset($parts['scheme']))
+				{
+					$method = $parts['scheme'];
+				}
+				if(isset($parts['user']))
+				{
+					$this->username = $parts['user'];
+				}
+				if(isset($parts['pass']))
+				{
+					$this->password = $parts['pass'];
+				}
+			}
+			if($path == '' || $path[0] != '/')
+			{
+				$this->path='/'.$path;
+			}
+			else
+			{
+				$this->path=$path;
+			}
+			$this->server=$server;
+			if($port != '')
+			{
+				$this->port=$port;
+			}
+			if($method != '')
+			{
+				$this->method=$method;
+			}
+
+			// if ZLIB is enabled, let the client by default accept compressed responses
+			if(function_exists('gzinflate') || (
+				function_exists('curl_init') && (($info = curl_version()) &&
+				((is_string($info) && strpos($info, 'zlib') !== null) || isset($info['libz_version'])))
+			))
+			{
+				$this->accepted_compression = array('gzip', 'deflate');
+			}
+
+			// keepalives: enabled by default
+			$this->keepalive = true;
+
+			// by default the xml parser can support these 3 charset encodings
+			$this->accepted_charset_encodings = array('UTF-8', 'ISO-8859-1', 'US-ASCII');
+
+			// initialize user_agent string
+			$this->user_agent = $GLOBALS['xmlrpcName'] . ' ' . $GLOBALS['xmlrpcVersion'];
+
+			if( function_exists('mb_internal_encoding') )
+			{	// Fixes PHP warnings "Converting from  to : not supported..."
+				$this->request_charset_encoding = $GLOBALS['xmlrpc_internalencoding'] = mb_internal_encoding();
+			}
+		}
+
+		/**
+		* Enables/disables the echoing to screen of the xmlrpc responses received
+		* @param integer $debug values 0, 1 and 2 are supported (2 = echo sent msg too, before received response)
+		* @access public
+		*/
+		function setDebug($in)
+		{
+			$this->debug=$in;
+		}
+
+		/**
+		* Add some http BASIC AUTH credentials, used by the client to authenticate
+		* @param string $u username
+		* @param string $p password
+		* @param integer $t auth type. See curl_setopt man page for supported auth types. Defaults to CURLAUTH_BASIC (basic auth)
+		* @access public
+		*/
+		function setCredentials($u, $p, $t=1)
+		{
+			$this->username=$u;
+			$this->password=$p;
+			$this->authtype=$t;
+		}
+
+		/**
+		* Add a client-side https certificate
+		* @param string $cert
+		* @param string $certpass
+		* @access public
+		*/
+		function setCertificate($cert, $certpass)
+		{
+			$this->cert = $cert;
+			$this->certpass = $certpass;
+		}
+
+		/**
+		* Add a CA certificate to verify server with (see man page about
+		* CURLOPT_CAINFO for more details
+		* @param string $cacert certificate file name (or dir holding certificates)
+		* @param bool $is_dir set to true to indicate cacert is a dir. defaults to false
+		* @access public
+		*/
+		function setCaCertificate($cacert, $is_dir=false)
+		{
+			if ($is_dir)
+			{
+				$this->cacertdir = $cacert;
+			}
+			else
+			{
+				$this->cacert = $cacert;
+			}
+		}
+
+		/**
+		* Set attributes for SSL communication: private SSL key
+		* NB: does not work in older php/curl installs
+		* Thanks to Daniel Convissor
+		* @param string $key The name of a file containing a private SSL key
+		* @param string $keypass The secret password needed to use the private SSL key
+		* @access public
+		*/
+		function setKey($key, $keypass)
+		{
+			$this->key = $key;
+			$this->keypass = $keypass;
+		}
+
+		/**
+		* Set attributes for SSL communication: verify server certificate
+		* @param bool $i enable/disable verification of peer certificate
+		* @access public
+		*/
+		function setSSLVerifyPeer($i)
+		{
+			$this->verifypeer = $i;
+		}
+
+		/**
+		* Set attributes for SSL communication: verify match of server cert w. hostname
+		* @param int $i
+		* @access public
+		*/
+		function setSSLVerifyHost($i)
+		{
+			$this->verifyhost = $i;
+		}
+
+		/**
+		* Set proxy info
+		* @param string $proxyhost
+		* @param string $proxyport Defaults to 8080 for HTTP and 443 for HTTPS
+		* @param string $proxyusername Leave blank if proxy has public access
+		* @param string $proxypassword Leave blank if proxy has public access
+		* @param int $proxyauthtype set to constant CURLAUTH_NTLM to use NTLM auth with proxy
+		* @access public
+		*/
+		function setProxy($proxyhost, $proxyport, $proxyusername = '', $proxypassword = '', $proxyauthtype = 1)
+		{
+			$this->proxy = $proxyhost;
+			$this->proxyport = $proxyport;
+			$this->proxy_user = $proxyusername;
+			$this->proxy_pass = $proxypassword;
+			$this->proxy_authtype = $proxyauthtype;
+		}
+
+		/**
+		* Enables/disables reception of compressed xmlrpc responses.
+		* Note that enabling reception of compressed responses merely adds some standard
+		* http headers to xmlrpc requests. It is up to the xmlrpc server to return
+		* compressed responses when receiving such requests.
+		* @param string $compmethod either 'gzip', 'deflate', 'any' or ''
+		* @access public
+		*/
+		function setAcceptedCompression($compmethod)
+		{
+			if ($compmethod == 'any')
+				$this->accepted_compression = array('gzip', 'deflate');
+			else
+				$this->accepted_compression = array($compmethod);
+		}
+
+		/**
+		* Enables/disables http compression of xmlrpc request.
+		* Take care when sending compressed requests: servers might not support them
+		* (and automatic fallback to uncompressed requests is not yet implemented)
+		* @param string $compmethod either 'gzip', 'deflate' or ''
+		* @access public
+		*/
+		function setRequestCompression($compmethod)
+		{
+			$this->request_compression = $compmethod;
+		}
+
+		/**
+		* Adds a cookie to list of cookies that will be sent to server.
+		* NB: setting any param but name and value will turn the cookie into a 'version 1' cookie:
+		* do not do it unless you know what you are doing
+		* @param string $name
+		* @param string $value
+		* @param string $path
+		* @param string $domain
+		* @param int $port
+		* @access public
+		*
+		* @todo check correctness of urlencoding cookie value (copied from php way of doing it...)
+		*/
+		function setCookie($name, $value='', $path='', $domain='', $port=null)
+		{
+			$this->cookies[$name]['value'] = urlencode($value);
+			if ($path || $domain || $port)
+			{
+				$this->cookies[$name]['path'] = $path;
+				$this->cookies[$name]['domain'] = $domain;
+				$this->cookies[$name]['port'] = $port;
+				$this->cookies[$name]['version'] = 1;
+			}
+			else
+			{
+				$this->cookies[$name]['version'] = 0;
+			}
+		}
+
+		/**
+		* Directly set cURL options, for extra flexibility
+		* It allows eg. to bind client to a specific IP interface / address
+		* @param $options array
+		*/
+		function SetCurlOptions( $options )
+		{
+			$this->extracurlopts = $options;
+		}
+
+		/**
+		* Set user-agent string that will be used by this client instance
+		* in http headers sent to the server
+		*/
+		function SetUserAgent( $agentstring )
+		{
+			$this->user_agent = $agentstring;
+		}
+
+		/**
+		* Send an xmlrpc request
+		* @param mixed $msg The message object, or an array of messages for using multicall, or the complete xml representation of a request
+		* @param integer $timeout Connection timeout, in seconds, If unspecified, a platform specific timeout will apply
+		* @param string $method if left unspecified, the http protocol chosen during creation of the object will be used
+		* @return xmlrpcresp
+		* @access public
+		*/
+		function& send($msg, $timeout=0, $method='')
+		{
+			// if user deos not specify http protocol, use native method of this client
+			// (i.e. method set during call to constructor)
+			if($method == '')
+			{
+				$method = $this->method;
+			}
+
+			if(is_array($msg))
+			{
+				// $msg is an array of xmlrpcmsg's
+				$r = $this->multicall($msg, $timeout, $method);
+				return $r;
+			}
+			elseif(is_string($msg))
+			{
+				$n = new xmlrpcmsg('');
+				$n->payload = $msg;
+				$msg = $n;
+			}
+
+			// where msg is an xmlrpcmsg
+			$msg->debug=$this->debug;
+
+			if($method == 'https')
+			{
+				$r =& $this->sendPayloadHTTPS(
+					$msg,
+					$this->server,
+					$this->port,
+					$timeout,
+					$this->username,
+					$this->password,
+					$this->authtype,
+					$this->cert,
+					$this->certpass,
+					$this->cacert,
+					$this->cacertdir,
+					$this->proxy,
+					$this->proxyport,
+					$this->proxy_user,
+					$this->proxy_pass,
+					$this->proxy_authtype,
+					$this->keepalive,
+					$this->key,
+					$this->keypass
+				);
+			}
+			elseif($method == 'http11')
+			{
+				$r =& $this->sendPayloadCURL(
+					$msg,
+					$this->server,
+					$this->port,
+					$timeout,
+					$this->username,
+					$this->password,
+					$this->authtype,
+					null,
+					null,
+					null,
+					null,
+					$this->proxy,
+					$this->proxyport,
+					$this->proxy_user,
+					$this->proxy_pass,
+					$this->proxy_authtype,
+					'http',
+					$this->keepalive
+				);
+			}
+			else
+			{
+				$r =& $this->sendPayloadHTTP10(
+					$msg,
+					$this->server,
+					$this->port,
+					$timeout,
+					$this->username,
+					$this->password,
+					$this->authtype,
+					$this->proxy,
+					$this->proxyport,
+					$this->proxy_user,
+					$this->proxy_pass,
+					$this->proxy_authtype
+				);
+			}
+
+			return $r;
+		}
+
+		/**
+		* @access private
+		*/
+		function &sendPayloadHTTP10($msg, $server, $port, $timeout=0,
+			$username='', $password='', $authtype=1, $proxyhost='',
+			$proxyport=0, $proxyusername='', $proxypassword='', $proxyauthtype=1)
+		{
+			if($port==0)
+			{
+				$port=80;
+			}
+
+			// Only create the payload if it was not created previously
+			if(empty($msg->payload))
+			{
+				$msg->createPayload($this->request_charset_encoding);
+			}
+
+			$payload = $msg->payload;
+			// Deflate request body and set appropriate request headers
+			if(function_exists('gzdeflate') && ($this->request_compression == 'gzip' || $this->request_compression == 'deflate'))
+			{
+				if($this->request_compression == 'gzip')
+				{
+					$a = @gzencode($payload);
+					if($a)
+					{
+						$payload = $a;
+						$encoding_hdr = "Content-Encoding: gzip\r\n";
+					}
+				}
+				else
+				{
+					$a = @gzcompress($payload);
+					if($a)
+					{
+						$payload = $a;
+						$encoding_hdr = "Content-Encoding: deflate\r\n";
+					}
+				}
+			}
+			else
+			{
+				$encoding_hdr = '';
+			}
+
+			// thanks to Grant Rauscher <grant7@firstworld.net> for this
+			$credentials='';
+			if($username!='')
+			{
+				$credentials='Authorization: Basic ' . base64_encode($username . ':' . $password) . "\r\n";
+				if ($authtype != 1)
+				{
+					error_log('XML-RPC: '.__METHOD__.': warning. Only Basic auth is supported with HTTP 1.0');
+				}
+			}
+
+			$accepted_encoding = '';
+			if(is_array($this->accepted_compression) && count($this->accepted_compression))
+			{
+				$accepted_encoding = 'Accept-Encoding: ' . implode(', ', $this->accepted_compression) . "\r\n";
+			}
+
+			$proxy_credentials = '';
+			if($proxyhost)
+			{
+				if($proxyport == 0)
+				{
+					$proxyport = 8080;
+				}
+				$connectserver = $proxyhost;
+				$connectport = $proxyport;
+				$uri = 'http://'.$server.':'.$port.$this->path;
+				if($proxyusername != '')
+				{
+					if ($proxyauthtype != 1)
+					{
+						error_log('XML-RPC: '.__METHOD__.': warning. Only Basic auth to proxy is supported with HTTP 1.0');
+					}
+					$proxy_credentials = 'Proxy-Authorization: Basic ' . base64_encode($proxyusername.':'.$proxypassword) . "\r\n";
+				}
+			}
+			else
+			{
+				$connectserver = $server;
+				$connectport = $port;
+				$uri = $this->path;
+			}
+
+			// Cookie generation, as per rfc2965 (version 1 cookies) or
+			// netscape's rules (version 0 cookies)
+			$cookieheader='';
+			if (count($this->cookies))
+			{
+				$version = '';
+				foreach ($this->cookies as $name => $cookie)
+				{
+					if ($cookie['version'])
+					{
+						$version = ' $Version="' . $cookie['version'] . '";';
+						$cookieheader .= ' ' . $name . '="' . $cookie['value'] . '";';
+						if ($cookie['path'])
+							$cookieheader .= ' $Path="' . $cookie['path'] . '";';
+						if ($cookie['domain'])
+							$cookieheader .= ' $Domain="' . $cookie['domain'] . '";';
+						if ($cookie['port'])
+							$cookieheader .= ' $Port="' . $cookie['port'] . '";';
+					}
+					else
+					{
+						$cookieheader .= ' ' . $name . '=' . $cookie['value'] . ";";
+					}
+				}
+				$cookieheader = 'Cookie:' . $version . substr($cookieheader, 0, -1) . "\r\n";
+			}
+
+			$op= 'POST ' . $uri. " HTTP/1.0\r\n" .
+				'User-Agent: ' . $this->user_agent . "\r\n" .
+				'Host: '. $server . ':' . $port . "\r\n" .
+				$credentials .
+				$proxy_credentials .
+				$accepted_encoding .
+				$encoding_hdr .
+				'Accept-Charset: ' . implode(',', $this->accepted_charset_encodings) . "\r\n" .
+				$cookieheader .
+				'Content-Type: ' . $msg->content_type . "\r\nContent-Length: " .
+				strlen($payload) . "\r\n\r\n" .
+				$payload;
+
+			if($this->debug > 1)
+			{
+				print "<PRE>\n---SENDING---\n" . htmlentities($op) . "\n---END---\n</PRE>";
+				// let the client see this now in case http times out...
+				flush();
+			}
+
+			if($timeout>0)
+			{
+				$fp=@fsockopen($connectserver, $connectport, $this->errno, $this->errstr, $timeout);
+			}
+			else
+			{
+				$fp=@fsockopen($connectserver, $connectport, $this->errno, $this->errstr);
+			}
+			if($fp)
+			{
+				if($timeout>0 && function_exists('stream_set_timeout'))
+				{
+					stream_set_timeout($fp, $timeout);
+				}
+			}
+			else
+			{
+				$this->errstr='Connect error: '.$this->errstr;
+				$r=new xmlrpcresp(0, $GLOBALS['xmlrpcerr']['http_error'], $this->errstr . ' (' . $this->errno . ')');
+				return $r;
+			}
+
+			if(!fputs($fp, $op, strlen($op)))
+			{
+				fclose($fp);
+				$this->errstr='Write error';
+				$r=new xmlrpcresp(0, $GLOBALS['xmlrpcerr']['http_error'], $this->errstr);
+				return $r;
+			}
+			else
+			{
+				// reset errno and errstr on succesful socket connection
+				$this->errstr = '';
+			}
+			// G. Giunta 2005/10/24: close socket before parsing.
+			// should yeld slightly better execution times, and make easier recursive calls (e.g. to follow http redirects)
+			$ipd='';
+			do
+			{
+				// shall we check for $data === FALSE?
+				// as per the manual, it signals an error
+				$ipd.=fread($fp, 32768);
+			} while(!feof($fp));
+			fclose($fp);
+			$r =& $msg->parseResponse($ipd, false, $this->return_type);
+			return $r;
+
+		}
+
+		/**
+		* @access private
+		*/
+		function &sendPayloadHTTPS($msg, $server, $port, $timeout=0, $username='',
+			$password='', $authtype=1, $cert='',$certpass='', $cacert='', $cacertdir='',
+			$proxyhost='', $proxyport=0, $proxyusername='', $proxypassword='', $proxyauthtype=1,
+			$keepalive=false, $key='', $keypass='')
+		{
+			$r =& $this->sendPayloadCURL($msg, $server, $port, $timeout, $username,
+				$password, $authtype, $cert, $certpass, $cacert, $cacertdir, $proxyhost, $proxyport,
+				$proxyusername, $proxypassword, $proxyauthtype, 'https', $keepalive, $key, $keypass);
+			return $r;
+		}
+
+		/**
+		* Contributed by Justin Miller <justin@voxel.net>
+		* Requires curl to be built into PHP
+		* NB: CURL versions before 7.11.10 cannot use proxy to talk to https servers!
+		* @access private
+		*/
+		function &sendPayloadCURL($msg, $server, $port, $timeout=0, $username='',
+			$password='', $authtype=1, $cert='', $certpass='', $cacert='', $cacertdir='',
+			$proxyhost='', $proxyport=0, $proxyusername='', $proxypassword='', $proxyauthtype=1, $method='https',
+			$keepalive=false, $key='', $keypass='')
+		{
+			if(!function_exists('curl_init'))
+			{
+				$this->errstr='CURL unavailable on this install';
+				$r=new xmlrpcresp(0, $GLOBALS['xmlrpcerr']['no_curl'], $GLOBALS['xmlrpcstr']['no_curl']);
+				return $r;
+			}
+			if($method == 'https')
+			{
+				if(($info = curl_version()) &&
+					((is_string($info) && strpos($info, 'OpenSSL') === null) || (is_array($info) && !isset($info['ssl_version']))))
+				{
+					$this->errstr='SSL unavailable on this install';
+					$r=new xmlrpcresp(0, $GLOBALS['xmlrpcerr']['no_ssl'], $GLOBALS['xmlrpcstr']['no_ssl']);
+					return $r;
+				}
+			}
+
+			if($port == 0)
+			{
+				if($method == 'http')
+				{
+					$port = 80;
+				}
+				else
+				{
+					$port = 443;
+				}
+			}
+
+			// Only create the payload if it was not created previously
+			if(empty($msg->payload))
+			{
+				$msg->createPayload($this->request_charset_encoding);
+			}
+
+			// Deflate request body and set appropriate request headers
+			$payload = $msg->payload;
+			if(function_exists('gzdeflate') && ($this->request_compression == 'gzip' || $this->request_compression == 'deflate'))
+			{
+				if($this->request_compression == 'gzip')
+				{
+					$a = @gzencode($payload);
+					if($a)
+					{
+						$payload = $a;
+						$encoding_hdr = 'Content-Encoding: gzip';
+					}
+				}
+				else
+				{
+					$a = @gzcompress($payload);
+					if($a)
+					{
+						$payload = $a;
+						$encoding_hdr = 'Content-Encoding: deflate';
+					}
+				}
+			}
+			else
+			{
+				$encoding_hdr = '';
+			}
+
+			if($this->debug > 1)
+			{
+				print "<PRE>\n---SENDING---\n" . htmlentities($payload) . "\n---END---\n</PRE>";
+				// let the client see this now in case http times out...
+				flush();
+			}
+
+			if(!$keepalive || !$this->xmlrpc_curl_handle)
+			{
+				$curl = curl_init($method . '://' . $server . ':' . $port . $this->path);
+				if($keepalive)
+				{
+					$this->xmlrpc_curl_handle = $curl;
+				}
+			}
+			else
+			{
+				$curl = $this->xmlrpc_curl_handle;
+			}
+
+			// results into variable
+			curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
+
+			if($this->debug)
+			{
+				curl_setopt($curl, CURLOPT_VERBOSE, 1);
