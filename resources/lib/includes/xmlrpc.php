@@ -1531,3 +1531,735 @@
 			if($this->debug)
 			{
 				curl_setopt($curl, CURLOPT_VERBOSE, 1);
+			}
+			curl_setopt($curl, CURLOPT_USERAGENT, $this->user_agent);
+			// required for XMLRPC: post the data
+			curl_setopt($curl, CURLOPT_POST, 1);
+			// the data
+			curl_setopt($curl, CURLOPT_POSTFIELDS, $payload);
+
+			// return the header too
+			curl_setopt($curl, CURLOPT_HEADER, 1);
+
+			// will only work with PHP >= 5.0
+			// NB: if we set an empty string, CURL will add http header indicating
+			// ALL methods it is supporting. This is possibly a better option than
+			// letting the user tell what curl can / cannot do...
+			if(is_array($this->accepted_compression) && count($this->accepted_compression))
+			{
+				//curl_setopt($curl, CURLOPT_ENCODING, implode(',', $this->accepted_compression));
+				// empty string means 'any supported by CURL' (shall we catch errors in case CURLOPT_SSLKEY undefined ?)
+				if (count($this->accepted_compression) == 1)
+				{
+					curl_setopt($curl, CURLOPT_ENCODING, $this->accepted_compression[0]);
+				}
+				else
+					curl_setopt($curl, CURLOPT_ENCODING, '');
+			}
+			// extra headers
+			$headers = array('Content-Type: ' . $msg->content_type , 'Accept-Charset: ' . implode(',', $this->accepted_charset_encodings));
+			// if no keepalive is wanted, let the server know it in advance
+			if(!$keepalive)
+			{
+				$headers[] = 'Connection: close';
+			}
+			// request compression header
+			if($encoding_hdr)
+			{
+				$headers[] = $encoding_hdr;
+			}
+
+			curl_setopt($curl, CURLOPT_HTTPHEADER, $headers);
+			// timeout is borked
+			if($timeout)
+			{
+				curl_setopt($curl, CURLOPT_TIMEOUT, $timeout == 1 ? 1 : $timeout - 1);
+			}
+
+			if($username && $password)
+			{
+				curl_setopt($curl, CURLOPT_USERPWD, $username.':'.$password);
+				if (defined('CURLOPT_HTTPAUTH'))
+				{
+					curl_setopt($curl, CURLOPT_HTTPAUTH, $authtype);
+				}
+				else if ($authtype != 1)
+				{
+					error_log('XML-RPC: '.__METHOD__.': warning. Only Basic auth is supported by the current PHP/curl install');
+				}
+			}
+
+			if($method == 'https')
+			{
+				// set cert file
+				if($cert)
+				{
+					curl_setopt($curl, CURLOPT_SSLCERT, $cert);
+				}
+				// set cert password
+				if($certpass)
+				{
+					curl_setopt($curl, CURLOPT_SSLCERTPASSWD, $certpass);
+				}
+				// whether to verify remote host's cert
+				curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, $this->verifypeer);
+				// set ca certificates file/dir
+				if($cacert)
+				{
+					curl_setopt($curl, CURLOPT_CAINFO, $cacert);
+				}
+				if($cacertdir)
+				{
+					curl_setopt($curl, CURLOPT_CAPATH, $cacertdir);
+				}
+				// set key file (shall we catch errors in case CURLOPT_SSLKEY undefined ?)
+				if($key)
+				{
+					curl_setopt($curl, CURLOPT_SSLKEY, $key);
+				}
+				// set key password (shall we catch errors in case CURLOPT_SSLKEY undefined ?)
+				if($keypass)
+				{
+					curl_setopt($curl, CURLOPT_SSLKEYPASSWD, $keypass);
+				}
+				// whether to verify cert's common name (CN); 0 for no, 1 to verify that it exists, and 2 to verify that it matches the hostname used
+				curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, $this->verifyhost);
+			}
+
+			// proxy info
+			if($proxyhost)
+			{
+				if($proxyport == 0)
+				{
+					$proxyport = 8080; // NB: even for HTTPS, local connection is on port 8080
+				}
+				curl_setopt($curl, CURLOPT_PROXY, $proxyhost.':'.$proxyport);
+				//curl_setopt($curl, CURLOPT_PROXYPORT,$proxyport);
+				if($proxyusername)
+				{
+					curl_setopt($curl, CURLOPT_PROXYUSERPWD, $proxyusername.':'.$proxypassword);
+					if (defined('CURLOPT_PROXYAUTH'))
+					{
+						curl_setopt($curl, CURLOPT_PROXYAUTH, $proxyauthtype);
+					}
+					else if ($proxyauthtype != 1)
+					{
+						error_log('XML-RPC: '.__METHOD__.': warning. Only Basic auth to proxy is supported by the current PHP/curl install');
+					}
+				}
+			}
+
+			// NB: should we build cookie http headers by hand rather than let CURL do it?
+			// the following code does not honour 'expires', 'path' and 'domain' cookie attributes
+			// set to client obj the the user...
+			if (count($this->cookies))
+			{
+				$cookieheader = '';
+				foreach ($this->cookies as $name => $cookie)
+				{
+					$cookieheader .= $name . '=' . $cookie['value'] . '; ';
+				}
+				curl_setopt($curl, CURLOPT_COOKIE, substr($cookieheader, 0, -2));
+			}
+
+			foreach ($this->extracurlopts as $opt => $val)
+			{
+				curl_setopt($curl, $opt, $val);
+			}
+
+			$result = curl_exec($curl);
+
+			if ($this->debug > 1)
+			{
+				print "<PRE>\n---CURL INFO---\n";
+				foreach(curl_getinfo($curl) as $name => $val)
+					 print $name . ': ' . htmlentities($val). "\n";
+				print "---END---\n</PRE>";
+			}
+
+			if(!$result) /// @todo we should use a better check here - what if we get back '' or '0'?
+			{
+				$this->errstr='no response';
+				$resp=new xmlrpcresp(0, $GLOBALS['xmlrpcerr']['curl_fail'], $GLOBALS['xmlrpcstr']['curl_fail']. ': '. curl_error($curl));
+				curl_close($curl);
+				if($keepalive)
+				{
+					$this->xmlrpc_curl_handle = null;
+				}
+			}
+			else
+			{
+				if(!$keepalive)
+				{
+					curl_close($curl);
+				}
+				$resp =& $msg->parseResponse($result, true, $this->return_type);
+			}
+			return $resp;
+		}
+
+		/**
+		* Send an array of request messages and return an array of responses.
+		* Unless $this->no_multicall has been set to true, it will try first
+		* to use one single xmlrpc call to server method system.multicall, and
+		* revert to sending many successive calls in case of failure.
+		* This failure is also stored in $this->no_multicall for subsequent calls.
+		* Unfortunately, there is no server error code universally used to denote
+		* the fact that multicall is unsupported, so there is no way to reliably
+		* distinguish between that and a temporary failure.
+		* If you are sure that server supports multicall and do not want to
+		* fallback to using many single calls, set the fourth parameter to FALSE.
+		*
+		* NB: trying to shoehorn extra functionality into existing syntax has resulted
+		* in pretty much convoluted code...
+		*
+		* @param array $msgs an array of xmlrpcmsg objects
+		* @param integer $timeout connection timeout (in seconds)
+		* @param string $method the http protocol variant to be used
+		* @param boolean fallback When true, upon receiveing an error during multicall, multiple single calls will be attempted
+		* @return array
+		* @access public
+		*/
+		function multicall($msgs, $timeout=0, $method='', $fallback=true)
+		{
+			if ($method == '')
+			{
+				$method = $this->method;
+			}
+			if(!$this->no_multicall)
+			{
+				$results = $this->_try_multicall($msgs, $timeout, $method);
+				if(is_array($results))
+				{
+					// System.multicall succeeded
+					return $results;
+				}
+				else
+				{
+					// either system.multicall is unsupported by server,
+					// or call failed for some other reason.
+					if ($fallback)
+					{
+						// Don't try it next time...
+						$this->no_multicall = true;
+					}
+					else
+					{
+						if (is_a($results, 'xmlrpcresp'))
+						{
+							$result = $results;
+						}
+						else
+						{
+							$result = new xmlrpcresp(0, $GLOBALS['xmlrpcerr']['multicall_error'], $GLOBALS['xmlrpcstr']['multicall_error']);
+						}
+					}
+				}
+			}
+			else
+			{
+				// override fallback, in case careless user tries to do two
+				// opposite things at the same time
+				$fallback = true;
+			}
+
+			$results = array();
+			if ($fallback)
+			{
+				// system.multicall is (probably) unsupported by server:
+				// emulate multicall via multiple requests
+				foreach($msgs as $msg)
+				{
+					$results[] =& $this->send($msg, $timeout, $method);
+				}
+			}
+			else
+			{
+				// user does NOT want to fallback on many single calls:
+				// since we should always return an array of responses,
+				// return an array with the same error repeated n times
+				foreach($msgs as $msg)
+				{
+					$results[] = $result;
+				}
+			}
+			return $results;
+		}
+
+		/**
+		* Attempt to boxcar $msgs via system.multicall.
+		* Returns either an array of xmlrpcreponses, an xmlrpc error response
+		* or false (when received response does not respect valid multicall syntax)
+		* @access private
+		*/
+		function _try_multicall($msgs, $timeout, $method)
+		{
+			// Construct multicall message
+			$calls = array();
+			foreach($msgs as $msg)
+			{
+				$call['methodName'] = new xmlrpcval($msg->method(),'string');
+				$numParams = $msg->getNumParams();
+				$params = array();
+				for($i = 0; $i < $numParams; $i++)
+				{
+					$params[$i] = $msg->getParam($i);
+				}
+				$call['params'] = new xmlrpcval($params, 'array');
+				$calls[] = new xmlrpcval($call, 'struct');
+			}
+			$multicall = new xmlrpcmsg('system.multicall');
+			$multicall->addParam(new xmlrpcval($calls, 'array'));
+
+			// Attempt RPC call
+			$result =& $this->send($multicall, $timeout, $method);
+
+			if($result->faultCode() != 0)
+			{
+				// call to system.multicall failed
+				return $result;
+			}
+
+			// Unpack responses.
+			$rets = $result->value();
+
+			if ($this->return_type == 'xml')
+			{
+					return $rets;
+			}
+			else if ($this->return_type == 'phpvals')
+			{
+				///@todo test this code branch...
+				$rets = $result->value();
+				if(!is_array($rets))
+				{
+					return false;		// bad return type from system.multicall
+				}
+				$numRets = count($rets);
+				if($numRets != count($msgs))
+				{
+					return false;		// wrong number of return values.
+				}
+
+				$response = array();
+				for($i = 0; $i < $numRets; $i++)
+				{
+					$val = $rets[$i];
+					if (!is_array($val)) {
+						return false;
+					}
+					switch(count($val))
+					{
+						case 1:
+							if(!isset($val[0]))
+							{
+								return false;		// Bad value
+							}
+							// Normal return value
+							$response[$i] = new xmlrpcresp($val[0], 0, '', 'phpvals');
+							break;
+						case 2:
+							///	@todo remove usage of @: it is apparently quite slow
+							$code = @$val['faultCode'];
+							if(!is_int($code))
+							{
+								return false;
+							}
+							$str = @$val['faultString'];
+							if(!is_string($str))
+							{
+								return false;
+							}
+							$response[$i] = new xmlrpcresp(0, $code, $str);
+							break;
+						default:
+							return false;
+					}
+				}
+				return $response;
+			}
+			else // return type == 'xmlrpcvals'
+			{
+				$rets = $result->value();
+				if($rets->kindOf() != 'array')
+				{
+					return false;		// bad return type from system.multicall
+				}
+				$numRets = $rets->arraysize();
+				if($numRets != count($msgs))
+				{
+					return false;		// wrong number of return values.
+				}
+
+				$response = array();
+				for($i = 0; $i < $numRets; $i++)
+				{
+					$val = $rets->arraymem($i);
+					switch($val->kindOf())
+					{
+						case 'array':
+							if($val->arraysize() != 1)
+							{
+								return false;		// Bad value
+							}
+							// Normal return value
+							$response[$i] = new xmlrpcresp($val->arraymem(0));
+							break;
+						case 'struct':
+							$code = $val->structmem('faultCode');
+							if($code->kindOf() != 'scalar' || $code->scalartyp() != 'int')
+							{
+								return false;
+							}
+							$str = $val->structmem('faultString');
+							if($str->kindOf() != 'scalar' || $str->scalartyp() != 'string')
+							{
+								return false;
+							}
+							$response[$i] = new xmlrpcresp(0, $code->scalarval(), $str->scalarval());
+							break;
+						default:
+							return false;
+					}
+				}
+				return $response;
+			}
+		}
+	} // end class xmlrpc_client
+
+	class xmlrpcresp
+	{
+		var $val = 0;
+		var $valtyp;
+		var $errno = 0;
+		var $errstr = '';
+		var $payload;
+		var $hdrs = array();
+		var $_cookies = array();
+		var $content_type = 'text/xml';
+		var $raw_data = '';
+
+		/**
+		* @param mixed $val either an xmlrpcval obj, a php value or the xml serialization of an xmlrpcval (a string)
+		* @param integer $fcode set it to anything but 0 to create an error response
+		* @param string $fstr the error string, in case of an error response
+		* @param string $valtyp either 'xmlrpcvals', 'phpvals' or 'xml'
+		*
+		* @todo add check that $val / $fcode / $fstr is of correct type???
+		* NB: as of now we do not do it, since it might be either an xmlrpcval or a plain
+		* php val, or a complete xml chunk, depending on usage of xmlrpc_client::send() inside which creator is called...
+		*/
+		function xmlrpcresp($val, $fcode = 0, $fstr = '', $valtyp='')
+		{
+			if($fcode != 0)
+			{
+				// error response
+				$this->errno = $fcode;
+				$this->errstr = $fstr;
+				//$this->errstr = htmlspecialchars($fstr); // XXX: encoding probably shouldn't be done here; fix later.
+			}
+			else
+			{
+				// successful response
+				$this->val = $val;
+				if ($valtyp == '')
+				{
+					// user did not declare type of response value: try to guess it
+					if (is_object($this->val) && is_a($this->val, 'xmlrpcval'))
+					{
+						$this->valtyp = 'xmlrpcvals';
+					}
+					else if (is_string($this->val))
+					{
+						$this->valtyp = 'xml';
+
+					}
+					else
+					{
+						$this->valtyp = 'phpvals';
+					}
+				}
+				else
+				{
+					// user declares type of resp value: believe him
+					$this->valtyp = $valtyp;
+				}
+			}
+		}
+
+		/**
+		* Returns the error code of the response.
+		* @return integer the error code of this response (0 for not-error responses)
+		* @access public
+		*/
+		function faultCode()
+		{
+			return $this->errno;
+		}
+
+		/**
+		* Returns the error code of the response.
+		* @return string the error string of this response ('' for not-error responses)
+		* @access public
+		*/
+		function faultString()
+		{
+			return $this->errstr;
+		}
+
+		/**
+		* Returns the value received by the server.
+		* @return mixed the xmlrpcval object returned by the server. Might be an xml string or php value if the response has been created by specially configured xmlrpc_client objects
+		* @access public
+		*/
+		function value()
+		{
+			return $this->val;
+		}
+
+		/**
+		* Returns an array with the cookies received from the server.
+		* Array has the form: $cookiename => array ('value' => $val, $attr1 => $val1, $attr2 = $val2, ...)
+		* with attributes being e.g. 'expires', 'path', domain'.
+		* NB: cookies sent as 'expired' by the server (i.e. with an expiry date in the past)
+		* are still present in the array. It is up to the user-defined code to decide
+		* how to use the received cookies, and wheter they have to be sent back with the next
+		* request to the server (using xmlrpc_client::setCookie) or not
+		* @return array array of cookies received from the server
+		* @access public
+		*/
+		function cookies()
+		{
+			return $this->_cookies;
+		}
+
+		/**
+		* Returns xml representation of the response. XML prologue not included
+		* @param string $charset_encoding the charset to be used for serialization. if null, US-ASCII is assumed
+		* @return string the xml representation of the response
+		* @access public
+		*/
+		function serialize($charset_encoding='')
+		{
+			if ($charset_encoding != '')
+				$this->content_type = 'text/xml; charset=' . $charset_encoding;
+			else
+				$this->content_type = 'text/xml';
+			$result = "<methodResponse>\n";
+			if($this->errno)
+			{
+				// G. Giunta 2005/2/13: let non-ASCII response messages be tolerated by clients
+				// by xml-encoding non ascii chars
+				$result .= "<fault>\n" .
+"<value>\n<struct><member><name>faultCode</name>\n<value><int>" . $this->errno .
+"</int></value>\n</member>\n<member>\n<name>faultString</name>\n<value><string>" .
+xmlrpc_encode_entitites($this->errstr, $GLOBALS['xmlrpc_internalencoding'], $charset_encoding) . "</string></value>\n</member>\n" .
+"</struct>\n</value>\n</fault>";
+			}
+			else
+			{
+				if(!is_object($this->val) || !is_a($this->val, 'xmlrpcval'))
+				{
+					if (is_string($this->val) && $this->valtyp == 'xml')
+					{
+						$result .= "<params>\n<param>\n" .
+							$this->val .
+							"</param>\n</params>";
+					}
+					else
+					{
+						/// @todo try to build something serializable?
+						die('cannot serialize xmlrpcresp objects whose content is native php values');
+					}
+				}
+				else
+				{
+					$result .= "<params>\n<param>\n" .
+						$this->val->serialize($charset_encoding) .
+						"</param>\n</params>";
+				}
+			}
+			$result .= "\n</methodResponse>";
+			$this->payload = $result;
+			return $result;
+		}
+	}
+
+	class xmlrpcmsg
+	{
+		var $payload;
+		var $methodname;
+		var $params=array();
+		var $debug=0;
+		var $content_type = 'text/xml';
+
+		/**
+		* @param string $meth the name of the method to invoke
+		* @param array $pars array of parameters to be paased to the method (xmlrpcval objects)
+		*/
+		function xmlrpcmsg($meth, $pars=0)
+		{
+			$this->methodname=$meth;
+			if(is_array($pars) && count($pars)>0)
+			{
+				for($i=0; $i<count($pars); $i++)
+				{
+					$this->addParam($pars[$i]);
+				}
+			}
+		}
+
+		/**
+		* @access private
+		*/
+		function xml_header($charset_encoding='')
+		{
+			if ($charset_encoding != '')
+			{
+				return "<?xml version=\"1.0\" encoding=\"$charset_encoding\" ?" . ">\n<methodCall>\n";
+			}
+			else
+			{
+				return "<?xml version=\"1.0\"?" . ">\n<methodCall>\n";
+			}
+		}
+
+		/**
+		* @access private
+		*/
+		function xml_footer()
+		{
+			return '</methodCall>';
+		}
+
+		/**
+		* @access private
+		*/
+		function kindOf()
+		{
+			return 'msg';
+		}
+
+		/**
+		* @access private
+		*/
+		function createPayload($charset_encoding='')
+		{
+			if ($charset_encoding != '')
+				$this->content_type = 'text/xml; charset=' . $charset_encoding;
+			else
+				$this->content_type = 'text/xml';
+			$this->payload=$this->xml_header($charset_encoding);
+			$this->payload.='<methodName>' . $this->methodname . "</methodName>\n";
+			$this->payload.="<params>\n";
+			for($i=0; $i<count($this->params); $i++)
+			{
+				$p=$this->params[$i];
+				$this->payload.="<param>\n" . $p->serialize($charset_encoding) .
+				"</param>\n";
+			}
+			$this->payload.="</params>\n";
+			$this->payload.=$this->xml_footer();
+		}
+
+		/**
+		* Gets/sets the xmlrpc method to be invoked
+		* @param string $meth the method to be set (leave empty not to set it)
+		* @return string the method that will be invoked
+		* @access public
+		*/
+		function method($meth='')
+		{
+			if($meth!='')
+			{
+				$this->methodname=$meth;
+			}
+			return $this->methodname;
+		}
+
+		/**
+		* Returns xml representation of the message. XML prologue included
+		* @return string the xml representation of the message, xml prologue included
+		* @access public
+		*/
+		function serialize($charset_encoding='')
+		{
+			$this->createPayload($charset_encoding);
+			return $this->payload;
+		}
+
+		/**
+		* Add a parameter to the list of parameters to be used upon method invocation
+		* @param xmlrpcval $par
+		* @return boolean false on failure
+		* @access public
+		*/
+		function addParam($par)
+		{
+			// add check: do not add to self params which are not xmlrpcvals
+			if(is_object($par) && is_a($par, 'xmlrpcval'))
+			{
+				$this->params[]=$par;
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+
+		/**
+		* Returns the nth parameter in the message. The index zero-based.
+		* @param integer $i the index of the parameter to fetch (zero based)
+		* @return xmlrpcval the i-th parameter
+		* @access public
+		*/
+		function getParam($i) { return $this->params[$i]; }
+
+		/**
+		* Returns the number of parameters in the messge.
+		* @return integer the number of parameters currently set
+		* @access public
+		*/
+		function getNumParams() { return count($this->params); }
+
+		/**
+		* Given an open file handle, read all data available and parse it as axmlrpc response.
+		* NB: the file handle is not closed by this function.
+		* NNB: might have trouble in rare cases to work on network streams, as we
+		*      check for a read of 0 bytes instead of feof($fp).
+		*      But since checking for feof(null) returns false, we would risk an
+		*      infinite loop in that case, because we cannot trust the caller
+		*      to give us a valid pointer to an open file...
+		* @access public
+		* @return xmlrpcresp
+		* @todo add 2nd & 3rd param to be passed to ParseResponse() ???
+		*/
+		function &parseResponseFile($fp)
+		{
+			$ipd='';
+			while($data=fread($fp, 32768))
+			{
+				$ipd.=$data;
+			}
+			//fclose($fp);
+			$r =& $this->parseResponse($ipd);
+			return $r;
+		}
+
+		/**
+		* Parses HTTP headers and separates them from data.
+		* @access private
+		*/
+		function &parseResponseHeaders(&$data, $headers_processed=false)
+		{
+				// Support "web-proxy-tunelling" connections for https through proxies
+				if(preg_match('/^HTTP\/1\.[0-1] 200 Connection established/', $data))
+				{
+					// Look for CR/LF or simple LF as line separator,
+					// (even though it is not valid http)
+					$pos = strpos($data,"\r\n\r\n");
+					if($pos || is_int($pos))
+					{
+						$bd = $pos+4;
+					}
