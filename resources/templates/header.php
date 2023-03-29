@@ -30,4 +30,22 @@
         <li class="nav-item">
           <a class="nav-link" href="#">Link 2</a>
         </li>
-        <li class
+        <li class="nav-item">
+          <a class="nav-link" href="#">Link 3</a>
+        </li>
+      </ul>
+      <!-- Search -->
+      <div class="pull-right">
+        <a class="nav-link dropdown-toggle" data-toggle="dropdown" href="#" role="button" aria-haspopup="true" aria-expanded="false">
+          <img src="<?php echo IMG_PATH . '/search.png' ?>" class="search-logo" alt="Search">
+        </a>
+        <div class="dropdown-menu search-box">
+          <form class="form-inline search-box">
+            <input class="form-control" type="text" placeholder="Search">
+            <button class="btn btn-secondary" type="submit">Search</button>
+          </form>
+        </div>
+      </div>
+    </nav>
+    <!-- Content -->
+    <div class="container content">
